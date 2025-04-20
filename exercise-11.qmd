@@ -1,0 +1,243 @@
+---
+title: "exercise-11"
+author: "Blessing Asianzu"
+format: html
+editor: visual
+---
+
+#Challenge
+
+```{r}
+
+library(tidyverse)
+library(skimr)
+
+f<- "https://raw.githubusercontent.com/difiore/ada-datasets/main/Mammal_lifehistories_v2.txt"
+
+d <- read_tsv(f,)
+skim(d)
+
+
+```
+
+#Step 1: Replacing missing data with NA
+
+```{r}
+
+library(naniar)
+install.packages("naniar")
+
+d <- replace_with_na_all(d, condition = ~.x == -999)
+d
+```
+
+#Step 2: Dropping Variables(litter size and refs)
+
+```{r}
+
+#Using the negative indexing to drop the variables 
+d <- d |> select(-`litter size`, -refs)
+d
+colnames(d)
+
+```
+
+
+#Step 3: Log transforming the all numeric variables 
+```{r}
+
+library(dplyr)
+
+d <- d |> mutate(
+  across(
+    .cols = c(`mass(g)`, `gestation(mo)`, `newborn(g)`, `weaning(mo)`,
+              `wean mass(g)`, `AFR(mo)`, `max. life(mo)`, `litters/year`),
+    .fns = log
+  )
+)
+
+
+```
+
+
+#Step 4: Regressions of each trait on log body mass
+
+```{r}
+
+# Regress each trait on log-mass and extract residuals
+rel_models <- list(
+  relGest = lm(`gestation(mo)` ~ `mass(g)`, data = d, na.action = na.exclude),
+  relWean = lm(`weaning(mo)` ~ `mass(g)`, data = d, na.action = na.exclude),
+  relAFR  = lm(`AFR(mo)` ~ `mass(g)`, data = d, na.action = na.exclude),
+  relLife = lm(`max. life(mo)` ~ `mass(g)`, data = d, na.action = na.exclude),
+  relNewbornMass = lm(`newborn(g)` ~ `mass(g)`, data = d, na.action = na.exclude),
+  relWeaningMass = lm(`wean mass(g)` ~ `mass(g)`, data = d, na.action = na.exclude)
+)
+
+# Add residuals to the dataframe, preserving NAs
+d$relGest         <- resid(rel_models$relGest)
+d$relWean         <- resid(rel_models$relWean)
+d$relAFR          <- resid(rel_models$relAFR)
+d$relLife         <- resid(rel_models$relLife)
+d$relNewbornMass  <- resid(rel_models$relNewbornMass)
+d$relWeaningMass  <- resid(rel_models$relWeaningMass)
+
+```
+
+
+
+
+#Step 5: Plotting different variables 
+```{r}
+
+library(ggplot2)
+#For Relative Lifespam
+ggplot(d, aes(x = order, y = relLife)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "Residual Max Lifespan by Mammalian Order",
+    x = "Order",
+    y = "Relative Lifespan (residuals)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Relative NewbornMass
+ggplot(d, aes(x = order, y = relNewbornMass)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "Residual Newborn Mass by Mammalian Order",
+    x = "Order",
+    y = "Relative Newborn Mass (residuals)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Relative Weaning Mass
+ggplot(d, aes(x = order, y = relWeaningMass)) +
+  geom_boxplot(fill = "red", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "Residual Weaning Mass by Mammalian Order",
+    x = "Order",
+    y = "Relative Weaning Mass (residuals)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#In relation to Order, Primates have the highest residual lifespan, Macroscelidea have the higest residual newborn mass and Perissodactyla have the highest residual weaning mass
+
+
+```
+
+#Step 6: Model selection
+```{r}
+
+library(dplyr)
+library(MuMIn)
+library(ggplot2)
+library(tidyr)
+library(broom)
+
+#dropping nas 
+d <- d |> drop_na(`max. life(mo)`, `AFR(mo)`, `gestation(mo)`, `newborn(g)`, 
+                  `weaning(mo)`, `wean mass(g)`, `litters/year`, `mass(g)`)
+
+# Define predictors
+predictors <- c("gestation(mo)", "newborn(g)", "weaning(mo)",
+                "wean mass(g)", "litters/year", "mass(g)")
+
+# Prepare datasets
+data_life <- d |> select(`max. life(mo)`, all_of(predictors))
+data_afr  <- d |> select(`AFR(mo)`, all_of(predictors))
+
+# Fit global models
+global_life <- lm(`max. life(mo)` ~ ., data = data_life)
+global_afr  <- lm(`AFR(mo)` ~ ., data = data_afr)
+
+#using dredge
+options(na.action = "na.fail")
+model_set_life <- dredge(global_life)
+model_set_afr  <- dredge(global_afr)
+
+#top models
+top_models_life <- get.models(model_set_life, subset = delta <= 4)
+top_models_afr  <- get.models(model_set_afr, subset = delta <= 4)
+
+#summary
+cat("=== Max Life (mo) ===\n")
+print(model_set_life[1])
+cat("Number of top models (ΔAICc ≤ 4):", length(top_models_life), "\n")
+
+cat("\n=== AFR (mo) ===\n")
+print(model_set_afr[1])
+cat("Number of top models (ΔAICc ≤ 4):", length(top_models_afr), "\n")
+
+# Fixed get_predictors function
+get_predictors <- function(models) {
+  lapply(models, function(m) names(coef(m))[-1]) |>
+    unlist() |>
+    table() |>
+    as.data.frame() |>
+    rename(variable = Var1, count = Freq) |>
+    filter(count == length(models))
+}
+
+#variables in all top models
+cat("\nVariables in ALL top models for Max Life:\n")
+print(get_predictors(top_models_life))
+
+cat("\nVariables in ALL top models for AFR:\n")
+print(get_predictors(top_models_afr))
+
+#model-averaged coefficients with CIs
+avg_life <- model.avg(top_models_life)
+avg_afr  <- model.avg(top_models_afr)
+
+#coefficients as data frames
+coef_life <- summary(avg_life)$coefmat.full |>
+  as.data.frame() |>
+  rownames_to_column("term") |>
+  select(term, Estimate, `Std. Error`) |>
+  mutate(Response = "Max Life")
+
+coef_afr <- summary(avg_afr)$coefmat.full |>
+  as.data.frame() |>
+  rownames_to_column("term") |>
+  select(term, Estimate, `Std. Error`) |>
+  mutate(Response = "AFR")
+
+# Combine and calculate confidence intervals
+coef_combined <- bind_rows(coef_life, coef_afr) |>
+  filter(term != "(Intercept)") |>
+  mutate(
+    lower = Estimate - 1.96 * `Std. Error`,
+    upper = Estimate + 1.96 * `Std. Error`
+  )
+
+# Plotting model-averaged coefficients
+ggplot(coef_combined, aes(x = Estimate, y = term, color = Response)) +
+  geom_point(position = position_dodge(width = 0.7), size = 3) +
+  geom_errorbar(aes(xmin = lower, xmax = upper), width = 0.2,
+                position = position_dodge(width = 0.7)) +
+  facet_wrap(~Response, scales = "free_x") +
+  theme_minimal() +
+  labs(
+    title = "Model-Averaged Coefficients with 95% CI",
+    x = "Estimate",
+    y = "Predictor"
+  )
+
+
+#For the response variable max life (mo), the best model overall, based on the lowest AICc(256.8), includes the variables gestation (mo), litters/year, mass (g), and weaning (mo). There are 5  models with a delta AICc of 4 or less, and the variables gestation (mo) and litters/year appear in all of these top models.
+
+#For the response variable AFR (mo), the best model overall, based on lowest AICc(321.2) also includes gestation (mo), litters/year, mass (g), and weaning (mo). There are 10 models with a delta AICc of 4 or less, and gestation (mo) and litters/year appear in all of these top models.
+
+#The variables gestation and litters/year are the most important predictors across both response variables.
+
+
+```
+
+
+
+
+
